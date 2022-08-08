@@ -4,7 +4,9 @@
 -record(packet, {
     header,
     questions,
-    answers
+    answers,
+    authorities,
+    additional_resources
   }).
 
 -record(header, {
@@ -43,11 +45,15 @@ read_packet(File) ->
   Header = parse_dns_header(Device),
   Questions = parse_dns_question_sections(Device, [], Header#header.question_count),
   Answers = parse_records(Device, [], Header#header.answer_count),
+  Authorities = parse_records(Device, [], Header#header.authority_count),
+  AdditionalResources = parse_records(Device, [], Header#header.additional_count),
   file:close(Device),
   #packet{
     header = Header,
     questions = Questions,
-    answers = Answers
+    answers = Answers,
+    authorities = Authorities,
+    additional_resources = AdditionalResources
   }.
 
 parse_dns_header(Device) ->
@@ -168,4 +174,6 @@ start() ->
   Packet = read_packet("../google_response_packet.txt"),
   io:fwrite("header: ~p\n", [Packet#packet.header]),
   io:fwrite("questions: ~p\n", [Packet#packet.questions]),
-  io:fwrite("answers: ~p\n", [Packet#packet.answers]).
+  io:fwrite("answers: ~p\n", [Packet#packet.answers]),
+  io:fwrite("authorities: ~p\n", [Packet#packet.authorities]),
+  io:fwrite("additional resources: ~p\n", [Packet#packet.additional_resources]).
