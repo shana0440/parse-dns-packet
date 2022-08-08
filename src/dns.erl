@@ -135,6 +135,7 @@ parse_domain(Device, Domain, JumpTo) ->
       end,
       string:join(Domain, ".");
     % message compression indicate by first two bits are one.
+    % message compression only compress the domain name, the class & type didn't include.
     % refs: https://www.rfc-editor.org/rfc/rfc1035.html#section-4.1.4
     (Count band 192) == 192 ->
       {ok, <<OffsetEnd:8>>} = file:read(Device, 1),
