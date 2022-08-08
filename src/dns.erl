@@ -1,6 +1,12 @@
 -module(dns).
 -export([start/0]).
 
+-record(packet, {
+    header,
+    questions,
+    answers
+  }).
+
 -record(header, {
     id,                     % 16 bits
     query_or_response,      % 1 bit
@@ -34,16 +40,15 @@
 
 read_packet(File) ->
   {ok, Device} = file:open(File, [read, binary]),
-  % {ok, Size} = file:position(Device, {eof, 0}),
-  % io:fwrite("~p\n", [Size]),
   Header = parse_dns_header(Device),
-  Questions = parse_dns_question_section(Device, [], Header#header.question_count),
-  {ok, Pos} = file:position(Device, {cur, 0}),
-  io:fwrite("pos: ~p\n", [Pos]),
+  Questions = parse_dns_question_sections(Device, [], Header#header.question_count),
   Answers = parse_records(Device, [], Header#header.answer_count),
-  io:fwrite("~p\n", [Answers]),
   file:close(Device),
-  Questions.
+  #packet{
+    header = Header,
+    questions = Questions,
+    answers = Answers
+  }.
 
 parse_dns_header(Device) ->
   {ok, HeaderBytes} = file:read(Device, 12),
@@ -73,49 +78,86 @@ parse_dns_header(Device) ->
   },
   Header.
 
-parse_dns_question_section(_, Questions, 0) ->
+parse_dns_question_sections(_, Questions, 0) ->
   Questions;
-parse_dns_question_section(Device, Questions, Count) ->
+parse_dns_question_sections(Device, Questions, Count) ->
+  Question = parse_dns_question_section(Device),
+  parse_dns_question_sections(Device, Questions ++ [Question], Count - 1).
+
+parse_dns_question_section(Device) ->
   QuestionName = parse_domain(Device, []),
   {ok, <<QuestionType:16, QuestionClass:16>>} = file:read(Device, 4),
   Question = #question{
     name = QuestionName,
-    type = QuestionType,
-    class = QuestionClass
+    type = case QuestionType of
+        1 -> 'A';
+        2 -> 'NS';
+        3 -> 'MD';
+        4 -> 'MF';
+        5 -> 'CNAME';
+        6 -> 'SOA';
+        7 -> 'MB';
+        8 -> 'MG';
+        9 -> 'MR';
+        10 -> 'NULL';
+        11 -> 'WKS';
+        12 -> 'PTR';
+        13 -> 'HINFO';
+        14 -> 'MINFO';
+        15 -> 'MX';
+        16 -> 'TXT'
+      end,
+    class = case QuestionClass of
+        1 -> 'IN';
+        2 -> 'CS';
+        3 -> 'CH';
+        4 -> 'HS'
+      end
   },
-  parse_dns_question_section(Device, Questions ++ [Question], Count - 1).
+  Question.
 
 parse_domain(Device, Domain) ->
-  io:fwrite("start read count\n"),
-  {ok, CountBinary} = file:read(Device, 1),
-  <<Count:8>> = CountBinary,
-  io:fwrite("count ~p\n", [Count]),
-  if Count == 0 ->
-    string:join(Domain, ".");
-  true ->
-    {ok, NameBinary} = file:read(Device, Count),
-    Name = binary_to_list(NameBinary),
-    parse_domain(Device, Domain ++ [Name])
+  parse_domain(Device, Domain, false).
+
+parse_domain(Device, Domain, JumpTo) ->
+  {ok, <<Count:8>>} = file:read(Device, 1),
+  if
+    Count == 0 ->
+      case JumpTo of
+        false -> false;
+        _ -> {ok, _} = file:position(Device, JumpTo)
+      end,
+      string:join(Domain, ".");
+    % message compression indicate by first two bits are one.
+    % refs: https://www.rfc-editor.org/rfc/rfc1035.html#section-4.1.4
+    (Count band 192) == 192 ->
+      {ok, <<OffsetEnd:8>>} = file:read(Device, 1),
+      <<_:2, OffsetStart:6>> = <<Count:8>>,
+      <<Offset:14>> = <<OffsetStart:6, OffsetEnd:8>>,
+      {ok, CurrentPosition} = file:position(Device, cur),
+      {ok, _} = file:position(Device, Offset),
+      parse_domain(Device, Domain, CurrentPosition);
+    true ->
+      {ok, NameBinary} = file:read(Device, Count),
+      Name = binary_to_list(NameBinary),
+      parse_domain(Device, Domain ++ [Name], JumpTo)
   end.
 
 parse_records(_, Records, 0) ->
   Records;
 parse_records(Device, Records, Count) ->
   Record = parse_record(Device),
-  io:fwrite("~p\n", Record),
   parse_records(Device, Records ++ [Record], Count - 1).
 
 parse_record(Device) ->
-  io:fwrite("start read record domain\n"),
-  Name = parse_domain(Device, []),
-  io:fwrite("domain ~p\n", [Name]),
-  {ok, <<Type:16, Class:16, TTL:32, RDLength:16>>} = file:read(Device, 1 + 1 + 2 + 1),
+  Question = parse_dns_question_section(Device),
+  {ok, <<TTL:32, RDLength:16>>} = file:read(Device, 4 + 2),
   {ok, RDataBinary} = file:read(Device, RDLength),
   RData = binary_to_list(RDataBinary),
   Record = #record{
-    name = Name,
-    type = Type,
-    class = Class,
+    name = Question#question.name,
+    type = Question#question.type,
+    class = Question#question.class,
     ttl = TTL,
     rdata_length = RDLength,
     rdata = RData
@@ -123,5 +165,7 @@ parse_record(Device) ->
   Record.
 
 start() ->
-  Questions = read_packet("../response_packet.txt"),
-  io:fwrite("~p\n", [Questions]).
+  Packet = read_packet("../google_response_packet.txt"),
+  io:fwrite("header: ~p\n", [Packet#packet.header]),
+  io:fwrite("questions: ~p\n", [Packet#packet.questions]),
+  io:fwrite("answers: ~p\n", [Packet#packet.answers]).
